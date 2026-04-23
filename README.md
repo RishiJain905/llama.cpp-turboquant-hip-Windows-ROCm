@@ -1,3 +1,296 @@
+# llama.cpp-turboquant-hip-windows
+
+> Windows-validated fork of `domvox/llama.cpp-turboquant-hip` for AMD HIP/ROCm, tested on an AMD Radeon RX 7800 XT.
+
+This fork documents a Windows build path for the HIP/ROCm TurboQuant KV-cache backend for `llama.cpp`.
+
+It was validated on Windows with an AMD Radeon RX 7800 XT using the AMD ROCm/HIP SDK, CMake, Ninja, and ROCm-provided Clang.
+
+## Upstream credits
+
+This repository is based on work from the following projects and authors:
+
+- [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) — base llama.cpp runtime and GGML ecosystem.
+- [`domvox/llama.cpp-turboquant-hip`](https://github.com/domvox/llama.cpp-turboquant-hip) — HIP/ROCm TurboQuant KV-cache port for AMD GPUs.
+- TurboQuant authors and contributors — TurboQuant KV-cache compression research and implementation direction.
+
+All credit for the original implementation belongs to the upstream authors and projects.
+
+This fork only documents and applies a Windows-tested build path plus a small Windows/Clang/MSVC STL compatibility patch.
+
+## What this fork is for
+
+This fork is intended for **standard llama.cpp-compatible GGUF models** such as:
+
+- `Q8_0`
+- `Q4_K`
+- `Q5_K_M`
+- other regular GGUF formats supported by llama.cpp
+
+It allows those normal GGUF models to use TurboQuant-style **KV-cache compression** at runtime.
+
+Example:
+
+```text
+Model weights:    Q8_0 / Q4_K / Q5_K_M
+Runtime KV cache: turbo2 / turbo3 / turbo4
+```
+
+The model file itself is not rewritten. TurboQuant is applied to the runtime KV cache.
+
+## What this fork is not for
+
+This fork is **not** intended for TurboQuant weight-format models such as:
+
+- `TQ3_1S`
+- `TQ3_4S`
+
+Those models require a different backend, such as a HIP/ROCm port of [`turbo-tan/llama.cpp-tq3`](https://github.com/turbo-tan/llama.cpp-tq3).
+
+Quick rule:
+
+```text
+Q8_0 / Q4_K / Q5_K_M GGUF -> this backend
+TQ3_1S / TQ3_4S GGUF     -> llama.cpp-tq3-style backend
+```
+
+## Validated environment
+
+| Component | Tested setup |
+| --- | --- |
+| OS | Windows |
+| GPU | AMD Radeon RX 7800 XT |
+| GPU architecture | RDNA3 / `gfx1101` |
+| ROCm/HIP | AMD ROCm/HIP SDK for Windows |
+| Compiler | ROCm-provided `clang.exe` / `clang++.exe` |
+| Build system | CMake + Ninja |
+| Model tested | `Qwopus3.5-9B-v3.Q8_0.gguf` |
+| Runtime tools tested | `llama-cli.exe`, `llama-server.exe` |
+| KV cache tested | `turbo4` |
+| Context tested | up to `-c 64000` |
+
+Observed during validation:
+
+- RX 7800 XT detected correctly through HIP/ROCm.
+- Standard GGUF model loaded successfully.
+- TurboQuant KV cache worked with standard GGUF weights.
+- `llama-cli.exe` conversation mode worked.
+- `llama-server.exe` OpenAI-compatible API worked.
+- `/metrics` worked when launched with `--metrics`.
+
+## Windows build issue fixed
+
+During Windows compilation, the build failed in:
+
+```text
+common/jinja/value.h
+```
+
+The error came from calls to `std::function::target<func_hptr>()` through const-qualified paths when compiling with ROCm Clang and MSVC STL headers.
+
+Example compiler error:
+
+```text
+reinterpret_cast from 'const void *' to 'std::shared_ptr<jinja::value_t> (*)(const jinja::func_args &)' casts away qualifiers
+```
+
+This appears to be a **Windows toolchain compatibility issue**, likely involving:
+
+- Windows
+- ROCm/HIP Clang
+- MSVC STL headers
+- `std::function::target(...)`
+- const-qualified access paths
+
+This does **not** appear to be RX 7800 XT-specific, because the failing code is host-side C++ template code, not GPU kernel code.
+
+## Source patch applied
+
+In `common/jinja/value.h`, three `std::function::target<func_hptr>()` calls were patched by copying the function object first, then calling `target(...)` on the non-const copy.
+
+### Patch 1
+
+Original:
+
+```cpp
+const auto target = val_func.target<func_hptr>();
+```
+
+Patched:
+
+```cpp
+auto val_func_copy = val_func;
+const auto target = val_func_copy.target<func_hptr>();
+```
+
+### Patch 2
+
+Original:
+
+```cpp
+const auto target_this = this->val_func.target<func_hptr>();
+```
+
+Patched:
+
+```cpp
+auto val_func_copy_this = this->val_func;
+const auto target_this = val_func_copy_this.target<func_hptr>();
+```
+
+### Patch 3
+
+Original:
+
+```cpp
+const auto target_other = other.val_func.target<func_hptr>();
+```
+
+Patched:
+
+```cpp
+auto val_func_copy_other = other.val_func;
+const auto target_other = val_func_copy_other.target<func_hptr>();
+```
+
+## Windows build steps
+
+Open PowerShell in the repository root.
+
+Set the ROCm compiler environment variables:
+
+```powershell
+$env:CC="C:/Program Files/AMD/ROCm/7.1/bin/clang.exe"
+$env:CXX="C:/Program Files/AMD/ROCm/7.1/bin/clang++.exe"
+$env:HIP_PATH="C:/Program Files/AMD/ROCm/7.1"
+$env:ROCM_PATH="C:/Program Files/AMD/ROCm/7.1"
+$env:CMAKE_PREFIX_PATH="C:/Program Files/AMD/ROCm/7.1"
+```
+
+Configure for RX 7800 XT / `gfx1101`:
+
+```powershell
+cmake -S . -B build -G Ninja `
+  -DGGML_HIP=ON `
+  -DGPU_TARGETS=gfx1101 `
+  -DCMAKE_BUILD_TYPE=Release
+```
+
+Build:
+
+```powershell
+cmake --build build --config Release --parallel 8
+```
+
+Expected outputs:
+
+```text
+build/bin/llama-cli.exe
+build/bin/llama-server.exe
+build/bin/ggml-hip.dll
+```
+
+## Example: llama-cli
+
+```powershell
+& "F:/Personal/TURBOQUANT/llama.cpp-turboquant-hip-feature-turboquant-hip-port-clean/build/bin/llama-cli.exe" `
+  -m "D:/LOCAL-MODELS/Jackrong/Qwopus3.5-9B-v3-GGUF/Qwopus3.5-9B-v3.Q8_0.gguf" `
+  -ngl 99 `
+  -c 64000 `
+  -fa 1 `
+  --cache-type-k turbo4 `
+  --cache-type-v turbo4 `
+  -cnv
+```
+
+## Example: llama-server with metrics
+
+```powershell
+& "F:/Personal/TURBOQUANT/llama.cpp-turboquant-hip-feature-turboquant-hip-port-clean/build/bin/llama-server.exe" `
+  -m "D:/LOCAL-MODELS/Jackrong/Qwopus3.5-9B-v3-GGUF/Qwopus3.5-9B-v3.Q8_0.gguf" `
+  -ngl 99 `
+  -c 64000 `
+  -fa 1 `
+  --cache-type-k turbo4 `
+  --cache-type-v turbo4 `
+  --metrics
+```
+
+Check useful metrics:
+
+```powershell
+(Invoke-WebRequest http://127.0.0.1:8080/metrics).Content -split "`n" |
+Select-String "prompt_tokens_seconds|predicted_tokens_seconds|kv_cache|n_tokens_max"
+```
+
+Send a simple request:
+
+```powershell
+$body = @{
+    messages = @(
+        @{
+            role = "user"
+            content = "Say hello in one short sentence."
+        }
+    )
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8080/v1/chat/completions" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+## Turbo cache notes
+
+For this backend:
+
+```text
+turbo2 = strongest KV-cache compression
+turbo3 = balanced KV-cache compression
+turbo4 = lightest Turbo cache compression
+```
+
+The Turbo cache setting does **not** rewrite the model file. It changes how the runtime stores the KV cache during inference.
+
+## Flash Attention
+
+Flash Attention can be enabled with:
+
+```text
+-fa 1
+```
+
+For best performance, keep K and V cache types symmetric:
+
+```text
+--cache-type-k turbo4 --cache-type-v turbo4
+```
+
+Avoid mixed K/V cache types while benchmarking unless you specifically want to test fallback paths.
+
+## Known limitations
+
+- This fork has only been validated on one Windows AMD setup so far.
+- The `value.h` patch is believed to be a Windows/Clang/MSVC STL compatibility fix, but broader testing is needed.
+- This backend is not for `TQ3_1S` / `TQ3_4S` weight-format models.
+- Users should test their own GPU target and ROCm/HIP version.
+
+## Repository description suggestion
+
+```text
+Windows-validated fork of domvox/llama.cpp-turboquant-hip for AMD HIP/ROCm
+```
+
+## Disclaimer
+
+This is an experimental Windows validation fork. It is not an official upstream release. Please refer to the upstream projects for the original implementation, licensing, and development history.
+
+
+The original upstream README content from `ggml-org/llama.cpp` is preserved below for reference.
+
+
 # llama.cpp
 
 ![llama](https://user-images.githubusercontent.com/1991296/230134379-7181e485-c521-4d23-a0d6-f7b3b61ba524.png)
