@@ -6,6 +6,8 @@ This fork documents a Windows build path for the HIP/ROCm TurboQuant KV-cache ba
 
 It was validated on Windows with an AMD Radeon RX 7800 XT using the AMD ROCm/HIP SDK, CMake, Ninja, and ROCm-provided Clang.
 
+Note: zip download or git clone feature/turboquant-hip-port-clean branch for clean ROCm llama.cpp HIP/ROCm build.
+
 ## Upstream credits
 
 This repository is based on work from the following projects and authors:
